@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Authenticator Clone</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@500&display=swap" rel="stylesheet">
+    <style>
+        body {
+            /* Google Authenticator風のフォントと背景 */
+            font-family: 'Roboto', sans-serif;
+            background-color: #121212; /* ダークモード */
+            color: #e3e3e3;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .code-font {
+            font-family: 'Roboto Mono', monospace;
+        }
+
+        /* 円形プログレスバーのアニメーション */
+        .progress-ring__circle {
+            transition: stroke-dashoffset 0.1s linear, stroke 0.3s ease;
+            transform: rotate(-90deg);
+            transform-origin: 50% 50%;
+        }
+
+        /* モーダルのアニメーション */
+        .modal-enter {
+            opacity: 0;
+            transform: translateY(20px);
+        }
+        .modal-enter-active {
+            opacity: 1;
+            transform: translateY(0);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        /* トースト通知 */
+        @keyframes slideUpFade {
+            0% { opacity: 0; transform: translate(-50%, 20px); }
+            10% { opacity: 1; transform: translate(-50%, 0); }
+            90% { opacity: 1; transform: translate(-50%, 0); }
+            100% { opacity: 0; transform: translate(-50%, -20px); }
+        }
+        .toast {
+            animation: slideUpFade 2s forwards;
+        }
+
+        /* コードが切り替わるときのフラッシュ効果 */
+        @keyframes flash {
+            0% { opacity: 1; }
+            50% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
+        .code-flash {
+            animation: flash 0.5s ease-out;
+        }
+        
+        /* 残り時間が少ない時の点滅 */
+        @keyframes pulse-red {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .text-danger {
+            color: #f28b82; /* Google Red light */
+            animation: pulse-red 1s infinite;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex justify-center">
+
+    <!-- モバイルアプリ風のメインコンテナ -->
+    <main class="w-full max-w-md bg-[#121212] min-h-screen relative shadow-2xl flex flex-col">
+        
+        <!-- ヘッダー -->
+        <header class="pt-6 pb-4 px-4 sticky top-0 bg-[#121212]/95 backdrop-blur z-10 flex justify-between items-center border-b border-gray-800">
+            <h1 class="text-xl font-medium text-white">Authenticator</h1>
+            <div class="flex gap-2">
+                <button onclick="toggleEditMode()" id="edit-btn" class="p-2 rounded-full hover:bg-gray-800 transition-colors text-gray-300 text-sm font-medium">
+                    編集
+                </button>
+            </div>
+        </header>
+
+        <div id="accounts-list" class="flex-1 overflow-y-auto pb-24 pt-2">
+            <!-- JavaScriptで動的にリストが生成されます -->
+        </div>
+
+        <!-- フローティングアクションボタン (FAB) -->
+        <button onclick="openModal()" class="fixed bottom-6 right-6 md:absolute md:bottom-8 md:right-8 w-14 h-14 bg-blue-300 hover:bg-blue-400 text-gray-900 rounded-2xl flex items-center justify-center shadow-lg transition-transform hover:scale-105 active:scale-95 z-20" style="border-radius: 16px;">
+            <i class="ph ph-plus text-2xl font-bold"></i>
+        </button>
+
+        <!-- アカウント追加モーダル -->
+        <div id="add-modal" class="fixed inset-0 bg-black/60 z-50 hidden items-end sm:items-center justify-center backdrop-blur-sm transition-opacity duration-300 opacity-0">
+            <div id="add-modal-content" class="bg-[#1e1e1e] w-full max-w-md sm:rounded-2xl rounded-t-2xl p-6 transform transition-transform duration-300 translate-y-full sm:translate-y-10 border border-gray-800">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-xl font-medium text-white">アカウントを追加</h2>
+                    <button onclick="closeModal()" class="p-2 rounded-full hover:bg-gray-700 text-gray-400">
+                        <i class="ph ph-x text-xl"></i>
+                    </button>
+                </div>
+
+                <form id="add-form" class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">サービス名 (例: Google, GitHub)</label>
+                        <input type="text" id="input-issuer" required placeholder="Google" class="w-full bg-[#2d2d2d] border-b-2 border-gray-600 focus:border-blue-400 px-4 py-3 text-white outline-none transition-colors rounded-t-md">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">アカウント名 (例: user@example.com)</label>
+                        <input type="text" id="input-account" required placeholder="user@example.com" class="w-full bg-[#2d2d2d] border-b-2 border-gray-600 focus:border-blue-400 px-4 py-3 text-white outline-none transition-colors rounded-t-md">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">セットアップキー</label>
+                        <input type="text" id="input-secret" required placeholder="abcd efgh ijkl mnop" class="w-full bg-[#2d2d2d] border-b-2 border-gray-600 focus:border-blue-400 px-4 py-3 text-white outline-none transition-colors rounded-t-md font-mono text-sm uppercase">
+                        <p class="text-xs text-gray-500 mt-1">※スペースやハイフンなどは自動で無視されます。</p>
+                    </div>
+                    <div class="pt-4 flex justify-end gap-3">
+                        <button type="button" onclick="closeModal()" class="px-5 py-2.5 rounded-full text-blue-300 hover:bg-blue-300/10 font-medium transition-colors">キャンセル</button>
+                        <button type="submit" class="px-5 py-2.5 rounded-full bg-blue-300 text-gray-900 hover:bg-blue-400 font-medium transition-colors">追加</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- コピートースト通知 -->
+        <div id="toast" class="fixed bottom-24 left-1/2 -translate-x-1/2 bg-gray-800 text-white px-6 py-3 rounded-full text-sm font-medium shadow-lg z-50 hidden items-center gap-2 border border-gray-700">
+            <i class="ph-fill ph-check-circle text-blue-300"></i>
+            <span>クリップボードにコピーしました</span>
+        </div>
+
+    </main>
+
+    <script>
+        // LocalStorageからデータを読み込む
+        let accounts = JSON.parse(localStorage.getItem('totp_accounts')) || [];
+        let isEditMode = false;
+
+        function saveAccounts() {
+            localStorage.setItem('totp_accounts', JSON.stringify(accounts));
+        }
+
+        // Base32文字列をUint8Arrayにデコードする関数
+        function base32ToBuffer(base32) {
+            const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+            let bits = '';
+            for (let i = 0; i < base32.length; i++) {
+                const val = alphabet.indexOf(base32[i].toUpperCase());
+                if (val === -1) continue; // パディング(=)や不正な文字は無視
+                bits += val.toString(2).padStart(5, '0');
+            }
+            
+            const bytes = [];
+            for (let i = 0; i < bits.length; i += 8) {
+                const byteStr = bits.slice(i, i + 8);
+                if (byteStr.length === 8) {
+                    bytes.push(parseInt(byteStr, 2));
+                }
+            }
+            return new Uint8Array(bytes);
+        }
+
+        // Web Crypto APIを使用した本物のTOTP(HMAC-SHA1)生成関数
+        async function generateRealTOTP(secretBase32, epoch) {
+            try {
+                if (!secretBase32) return "000000";
+                
+                const keyBuffer = base32ToBuffer(secretBase32);
+                if (keyBuffer.length === 0) return "ERROR ";
+
+                // 8バイトのカウンター配列を作成
+                const counterBuffer = new ArrayBuffer(8);
+                const counterView = new DataView(counterBuffer);
+                // 32bitオフセットにepochをセット (2038年問題まではこれで動作します)
+                counterView.setUint32(4, epoch, false); 
+
+                // HMAC-SHA1キーをインポート
+                const key = await window.crypto.subtle.importKey(
+                    'raw',
+                    keyBuffer,
+                    { name: 'HMAC', hash: 'SHA-1' },
+                    false,
+                    ['sign']
+                );
+
+                // 署名（ハッシュ化）
+                const signature = await window.crypto.subtle.sign('HMAC', key, counterBuffer);
+                const hash = new Uint8Array(signature);
+                
+                // Dynamic Truncation (RFC 4226)
+                const offset = hash[hash.length - 1] & 0xf;
+                let binary =
+                    ((hash[offset] & 0x7f) << 24) |
+                    ((hash[offset + 1] & 0xff) << 16) |
+                    ((hash[offset + 2] & 0xff) << 8) |
+                    (hash[offset + 3] & 0xff);
+
+                const otp = binary % 1000000;
+                return otp.toString().padStart(6, '0');
+            } catch (e) {
+                console.error("TOTP generation failed", e);
+                return "------";
+            }
+        }
+
+        const accountsList = document.getElementById('accounts-list');
+        let currentEpoch = -1;
+
+        function toggleEditMode() {
+            isEditMode = !isEditMode;
+            document.getElementById('edit-btn').innerText = isEditMode ? '完了' : '編集';
+            document.getElementById('edit-btn').classList.toggle('text-blue-400', isEditMode);
+            renderAccounts();
+        }
+
+        function renderAccounts() {
+            accountsList.innerHTML = '';
+            
+            if (accounts.length === 0) {
+                accountsList.innerHTML = `
+                    <div class="flex flex-col items-center justify-center h-64 text-gray-500">
+                        <i class="ph ph-shield-check text-6xl mb-4 opacity-50"></i>
+                        <p>アカウントがありません</p>
+                        <p class="text-sm mt-2">右下の「+」ボタンから追加してください</p>
+                    </div>
+                `;
+                return;
+            }
+
+            accounts.forEach(acc => {
+                // DOM要素の生成
+                const card = document.createElement('div');
+                card.className = 'px-4 py-5 border-b border-gray-800/50 hover:bg-gray-800/30 cursor-pointer transition-colors group relative';
+                card.onclick = () => copyCode(acc.id);
+                
+                card.innerHTML = `
+                    <div class="flex justify-between items-center">
+                        <div class="flex-1 min-w-0 pr-4">
+                            <h3 class="text-gray-400 text-sm font-medium mb-1 truncate">${acc.issuer}</h3>
+                            <div class="flex items-center gap-4">
+                                <!-- コード表示部分（スペースで区切って見やすくする） -->
+                                <div class="text-[32px] leading-none text-blue-300 font-medium code-font tracking-wide" id="code-${acc.id}">
+                                    000 000
+                                </div>
+                            </div>
+                            <p class="text-gray-500 text-xs mt-1 truncate">${acc.account}</p>
+                        </div>
+                        
+                        <!-- 円形プログレスバー / 削除ボタン切り替え -->
+                        ${isEditMode ? `
+                            <button onclick="deleteAccount(event, ${acc.id})" class="p-3 text-red-400 hover:bg-red-400/10 rounded-full transition-colors">
+                                <i class="ph ph-trash text-2xl"></i>
+                            </button>
+                        ` : `
+                            <div class="relative w-8 h-8 flex-shrink-0 flex items-center justify-center">
+                                <svg class="w-8 h-8" viewBox="0 0 36 36">
+                                    <circle cx="18" cy="18" r="14" fill="none" stroke="#333" stroke-width="3"></circle>
+                                    <circle id="progress-${acc.id}" class="progress-ring__circle" cx="18" cy="18" r="14" fill="none" stroke="#93c5fd" stroke-width="3" stroke-dasharray="88" stroke-dashoffset="0"></circle>
+                                </svg>
+                            </div>
+                        `}
+                    </div>
+                `;
+                accountsList.appendChild(card);
+            });
+            
+            // 強制的にコードを再計算させる
+            currentEpoch = -1; 
+        }
+
+        // 毎フレーム呼ばれる更新処理（非同期ロジックを含む）
+        async function updateTimersAndCodes() {
+            if (isEditMode) {
+                // 編集モード中はプログレスバーのアニメーションを一時停止
+                requestAnimationFrame(updateTimersAndCodes);
+                return;
+            }
+
+            const now = Date.now();
+            const timeStep = 30000; // 30秒
+            const newEpoch = Math.floor(now / timeStep);
+            
+            const msPassed = now % timeStep;
+            const msRemaining = timeStep - msPassed;
+            const secondsRemaining = msRemaining / 1000;
+            
+            const progressPercent = msRemaining / timeStep;
+            const circleCircumference = 88;
+            const offset = circleCircumference - (progressPercent * circleCircumference);
+
+            const isEpochChanged = newEpoch !== currentEpoch;
+            if (isEpochChanged) {
+                currentEpoch = newEpoch;
+            }
+
+            const isDanger = secondsRemaining <= 5;
+
+            // アカウントごとに処理（非同期をループ内で実行）
+            for (const acc of accounts) {
+                const codeElement = document.getElementById(`code-${acc.id}`);
+                const progressElement = document.getElementById(`progress-${acc.id}`);
+                
+                if (codeElement) {
+                    // エポックが変わった、またはまだコードが計算されていない場合
+                    if (isEpochChanged || codeElement.innerText.includes('000 000')) {
+                        const code = await generateRealTOTP(acc.secret, currentEpoch);
+                        codeElement.innerText = `${code.slice(0, 3)} ${code.slice(3)}`;
+                        
+                        codeElement.classList.remove('code-flash');
+                        void codeElement.offsetWidth;
+                        codeElement.classList.add('code-flash');
+                    }
+
+                    if (isDanger) {
+                        codeElement.classList.add('text-danger');
+                        codeElement.classList.remove('text-blue-300');
+                        if (progressElement) progressElement.setAttribute('stroke', '#f28b82');
+                    } else {
+                        codeElement.classList.remove('text-danger');
+                        codeElement.classList.add('text-blue-300');
+                        if (progressElement) progressElement.setAttribute('stroke', '#93c5fd');
+                    }
+
+                    if (progressElement) {
+                        progressElement.setAttribute('stroke-dashoffset', offset);
+                    }
+                }
+            }
+
+            requestAnimationFrame(updateTimersAndCodes);
+        }
+
+        // --- インタラクション処理 ---
+
+        // クリップボードへのコピー
+        function copyCode(id) {
+            const codeElement = document.getElementById(`code-${id}`);
+            if (!codeElement) return;
+
+            // スペースを除去して6桁の数字だけにする
+            const code = codeElement.innerText.replace(/\s/g, '');
+            
+            // クリップボードにコピー (モダンAPIへのフォールバック付き)
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(code).then(showToast);
+            } else {
+                // 古いブラウザ/非セキュアコンテキスト用のフォールバック
+                const textArea = document.createElement("textarea");
+                textArea.value = code;
+                textArea.style.position = "fixed";
+                textArea.style.left = "-999999px";
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                    showToast();
+                } catch (err) {
+                    console.error('コピーに失敗しました', err);
+                }
+                textArea.remove();
+            }
+        }
+
+        // トースト通知の表示
+        function showToast() {
+            const toast = document.getElementById('toast');
+            
+            // 既存のアニメーションをリセット
+            toast.classList.remove('hidden', 'flex');
+            void toast.offsetWidth; // リフロー強制
+            
+            toast.classList.add('flex', 'toast');
+            
+            setTimeout(() => {
+                toast.classList.remove('flex', 'toast');
+                toast.classList.add('hidden');
+            }, 2000);
+        }
+
+        // --- モーダル（アカウント追加）処理 ---
+        const modal = document.getElementById('add-modal');
+        const modalContent = document.getElementById('add-modal-content');
+        const addForm = document.getElementById('add-form');
+
+        function openModal() {
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            
+            // 少し遅延させてアニメーションクラスを付与
+            setTimeout(() => {
+                modal.classList.remove('opacity-0');
+                if (window.innerWidth >= 640) { // sm breakpoint
+                    modalContent.classList.remove('translate-y-10');
+                } else {
+                    modalContent.classList.remove('translate-y-full');
+                }
+            }, 10);
+            
+            document.getElementById('input-issuer').focus();
+        }
+
+        function closeModal() {
+            modal.classList.add('opacity-0');
+            if (window.innerWidth >= 640) {
+                modalContent.classList.add('translate-y-10');
+            } else {
+                modalContent.classList.add('translate-y-full');
+            }
+            
+            setTimeout(() => {
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+                addForm.reset();
+            }, 300); // transition時間と合わせる
+        }
+
+        // アカウント追加フォームの送信
+        addForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            
+            const issuer = document.getElementById('input-issuer').value;
+            const account = document.getElementById('input-account').value;
+            // スペースやハイフンなど、Base32以外の不要な文字を自動的に除去し、大文字に変換
+            const secret = document.getElementById('input-secret').value.replace(/[^a-zA-Z2-7=]/g, '').toUpperCase();
+
+            const newId = Date.now(); // ユニークなIDとしてタイムスタンプを使用
+
+            accounts.push({
+                id: newId,
+                issuer: issuer,
+                account: account,
+                secret: secret
+            });
+
+            saveAccounts(); // ローカルストレージに保存
+            closeModal();
+            renderAccounts();
+        });
+
+        // アカウント削除機能
+        function deleteAccount(e, id) {
+            e.stopPropagation(); 
+            if(confirm('このアカウントを削除してもよろしいですか？')) {
+                accounts = accounts.filter(acc => acc.id !== id);
+                saveAccounts(); // ローカルストレージを更新
+                renderAccounts();
+            }
+        }
+
+        // --- 初期化 ---
+        window.addEventListener('DOMContentLoaded', () => {
+            renderAccounts();
+            requestAnimationFrame(updateTimersAndCodes);
+        });
+
+    </script>
+</body>
+</html>
